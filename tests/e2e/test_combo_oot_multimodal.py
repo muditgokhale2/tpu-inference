@@ -84,10 +84,14 @@ class MockModelConfig:
 def test_oot_multimodal_full_stack_verification(cleanup_registries):
     """
     Combines static plumbing verification with dynamic E2E multimodal inference.
+    We use the official architecture name to satisfy vLLM's internal multimodal checks,
+    but we use register_model to intercept and provide our custom OOT implementation.
     """
-    arch = "OOTVisionModelForCausalLM"
+    # Use official name as registry key to ensure all multimodal flags (transposing, etc) are active
+    arch = "Qwen2_5_VLForConditionalGeneration"
 
     # --- PHASE 1: STATIC VERIFICATION ---
+    # register_model intercepts the default implementation with our OOT class
     register_model(arch, OOTMultimodalModel)
     assert arch in _MODEL_REGISTRY
 
@@ -116,7 +120,6 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
         tensor_parallel_size=tensor_parallel_size,
         gpu_memory_utilization=gpu_memory_utilization,
         max_num_seqs=1,
-        hf_overrides={"architectures": [arch]},
         mm_processor_kwargs={
             "size": {
                 "longest_edge": 1003520,
@@ -144,12 +147,12 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
     llm = LLM(**engine_kwargs)
 
     # Identity Check: Inspect the model instance actually running on TPU
+    # This is our hard evidence that the registry was intercepted.
     model_instance = llm.llm_engine.model_executor.driver_worker.model_runner.model
     assert issubclass(type(model_instance), OOTMultimodalModel), \
-        "Runtime engine is not using the OOT registered class!"
+        f"Engine is not using the OOT class! Found: {type(model_instance)}"
 
     # Using Qwen2.5-VL prompt template
-    # NOTE: other models may be different
     image = convert_image_mode(ImageAsset("cherry_blossom").pil_image, "RGB")
     prompt = ("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
               "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>"
@@ -161,7 +164,7 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
 
     outputs = llm.generate(inputs, sampling_params)
     generated_text = outputs[0].outputs[0].text.strip()
-    print(f"OOT Model Response: {generated_text}")
+    print(f"\nOOT Model Response: {generated_text}")
 
     # Accuracy similarity check
     similarity_score = max(

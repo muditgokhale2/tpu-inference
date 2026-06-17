@@ -15,14 +15,13 @@ import difflib
 import os
 from dataclasses import asdict
 
-import pytest
 import torch
 from vllm.assets.image import ImageAsset
 from vllm.model_executor.models.qwen2_5_vl import (
     Qwen2_5_VLDummyInputsBuilder, Qwen2_5_VLMultiModalProcessor,
     Qwen2_5_VLProcessingInfo)
 from vllm.model_executor.models.registry import ModelRegistry
-# Advanced OOT Identity Management
+# Import official multimodal registration tools
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.image import convert_image_mode
 
@@ -40,17 +39,18 @@ except ImportError:
     VLLM_INTERFACE_CHECK_AVAILABLE = False
 
 
-# 1. Define OOT Class
+# 1. Define OOT Class inheriting from the correct JAX class
 class OOTMultimodalModel(Qwen2_5_VLForConditionalGeneration):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Provenance signature
         print(
-            f"!!! OOT Multimodal Model ({self.__class__.__name__}) Initialized !!!"
+            f"!!! OOT Multimodal Subclass ({self.__class__.__name__}) Initialized !!!"
         )
 
 
-# Standard gold-standard texts for accuracy check
+# Standard gold-standard texts for accuracy check (aligned with test_multi_modal_inference.py)
 EXPECTED_TEXTS = (
     "The image depicts a tall, cylindrical tower with a lattice-like structure, surrounded by cherry blossom trees in full bloom. The cherry blossoms are in various stages of opening, with pink petals covering the branches. The sky is clear and blue, providing a vibrant backdrop to the scene. The tower appears to be a significant landmark",
     "The image depicts a stunning view of the Tokyo Skytree, a tall broadcasting tower located in the Odaiba district of Tokyo, Japan. The skytree is surrounded by cherry blossom trees in full bloom, creating a picturesque and vibrant scene. The cherry blossoms are in various stages of bloom, with some branches densely covered",
@@ -59,18 +59,6 @@ EXPECTED_TEXTS = (
 
 def _get_tensor_parallel_size():
     return 2 if os.environ.get('TPU_VERSION', 'tpu6e') == "tpu7x" else 1
-
-
-@pytest.fixture
-def cleanup_registries():
-    """Ensures a clean state for registries, matching original test_model_loader logic."""
-    _MODEL_REGISTRY.clear()
-    if hasattr(ModelRegistry, "models"):
-        ModelRegistry.models.clear()
-    yield
-    _MODEL_REGISTRY.clear()
-    if hasattr(ModelRegistry, "models"):
-        ModelRegistry.models.clear()
 
 
 # Mock config needed for vLLM resolution check
@@ -86,24 +74,26 @@ class MockModelConfig:
             self.architectures = architectures
 
 
-def test_oot_multimodal_full_stack_verification(cleanup_registries):
+def test_oot_multimodal_full_stack_verification():
     """
-    Combined Feature Test: OOT Registration + Multimodal Inference.
+    Combined Feature Test: OOT Inheritance + Multimodal Inference.
     
-    This is the ultimate OOT test. We define a unique architecture name and a
-    new subclass. We then manually register both the architecture and its 
-    multimodal processing capabilities to vLLM. This ensures that the entire
-    stack (from config resolution to weight transposing) recognizes our OOT model.
+    This test verifies that we can register a NEW architecture name pointing to a 
+    NEW subclass without clearing the original registries. By explicitly 
+    registering the subclass in vLLM's multimodal registry, we restore the 
+    full original implementation state (identity, transposing, processing).
     """
-    custom_arch = "MyCustomOOTMultimodalModel"
+    # Use a unique name to prove the OOT registration mechanism adds new capability
+    custom_arch = "My_Inherited_OOT_Multimodal_Model"
 
-    # --- PHASE 1: FULL IDENTITY REGISTRATION ---
+    # --- PHASE 1: REGISTRATION WITHOUT CLEARING ---
 
-    # A. Register the architecture implementation to tpu-inference and vLLM
+    # A. Register the new architecture to our custom implementation
     register_model(custom_arch, OOTMultimodalModel)
 
-    # B. Register the NEW CLASS to vLLM's Multimodal Registry.
-    # Without this, vLLM's ModelConfig won't know the new class can handle images.
+    # B. Explicitly sync multimodal capabilities for the NEW subclass.
+    # This restores the "original state" for the inherited class, allowing vLLM
+    # to recognize it as multimodal and trigger correct weight transpositions.
     MULTIMODAL_REGISTRY.register_processor(
         Qwen2_5_VLMultiModalProcessor,
         info=Qwen2_5_VLProcessingInfo,
@@ -112,7 +102,7 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
 
     assert custom_arch in _MODEL_REGISTRY
 
-    # Static Verification
+    # Static Plumbing Check
     model_config = MockModelConfig(architectures=[custom_arch])
     vllm_compatible_model, _ = ModelRegistry.resolve_model_cls(
         architectures=[custom_arch], model_config=model_config)
@@ -124,7 +114,7 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
     if VLLM_INTERFACE_CHECK_AVAILABLE:
         assert is_vllm_model(vllm_compatible_model)
 
-    # --- PHASE 2: DYNAMIC INFERENCE ---
+    # --- PHASE 2: DYNAMIC VERIFICATION ---
 
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     engine_args = EngineArgs(
@@ -154,11 +144,12 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
     pass_config = {k: v for k, v in pass_config.items() if v is not None}
     engine_kwargs["compilation_config"]["pass_config"] = pass_config
 
-    # Initialize Engine. vLLM will now correctly identify the model as multimodal.
+    # Initialize Engine. is_multimodal_model will be True because we registered the class.
     llm = LLM(**engine_kwargs)
 
-    # Runtime Identity Check
+    # Identity Check: Verify we are using the subclass, not the original class
     model_instance = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    assert type(model_instance) is not Qwen2_5_VLForConditionalGeneration
     assert isinstance(model_instance, OOTMultimodalModel)
 
     # Inference Quality Check
@@ -172,7 +163,7 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
     outputs = llm.generate(inputs, SamplingParams(temperature=0,
                                                   max_tokens=64))
     generated_text = outputs[0].outputs[0].text.strip()
-    print(f"\nOOT Fully Verified Response: {generated_text}")
+    print(f"\nOOT Subclass Verified Response: {generated_text}")
 
     # Accuracy similarity check
     similarity_score = max(

@@ -18,7 +18,12 @@ from dataclasses import asdict
 import pytest
 import torch
 from vllm.assets.image import ImageAsset
+from vllm.model_executor.models.qwen2_5_vl import (
+    Qwen2_5_VLDummyInputsBuilder, Qwen2_5_VLMultiModalProcessor,
+    Qwen2_5_VLProcessingInfo)
 from vllm.model_executor.models.registry import ModelRegistry
+# Advanced OOT Identity Management
+from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.image import convert_image_mode
 
 # Official tpu_inference libraries and registries
@@ -34,7 +39,18 @@ try:
 except ImportError:
     VLLM_INTERFACE_CHECK_AVAILABLE = False
 
-# Standard gold-standard texts for accuracy check (aligned with test_multi_modal_inference.py)
+
+# 1. Define OOT Class
+class OOTMultimodalModel(Qwen2_5_VLForConditionalGeneration):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        print(
+            f"!!! OOT Multimodal Model ({self.__class__.__name__}) Initialized !!!"
+        )
+
+
+# Standard gold-standard texts for accuracy check
 EXPECTED_TEXTS = (
     "The image depicts a tall, cylindrical tower with a lattice-like structure, surrounded by cherry blossom trees in full bloom. The cherry blossoms are in various stages of opening, with pink petals covering the branches. The sky is clear and blue, providing a vibrant backdrop to the scene. The tower appears to be a significant landmark",
     "The image depicts a stunning view of the Tokyo Skytree, a tall broadcasting tower located in the Odaiba district of Tokyo, Japan. The skytree is surrounded by cherry blossom trees in full bloom, creating a picturesque and vibrant scene. The cherry blossoms are in various stages of bloom, with some branches densely covered",
@@ -72,44 +88,52 @@ class MockModelConfig:
 
 def test_oot_multimodal_full_stack_verification(cleanup_registries):
     """
-    Verifies that the Out-of-tree (OOT) registration mechanism can successfully
-    re-inject and run a complex multimodal model after the registries are cleared.
+    Combined Feature Test: OOT Registration + Multimodal Inference.
     
-    This proves the register_model pipeline is functional and takes precedence 
-    over the built-in system state.
+    This is the ultimate OOT test. We define a unique architecture name and a
+    new subclass. We then manually register both the architecture and its 
+    multimodal processing capabilities to vLLM. This ensures that the entire
+    stack (from config resolution to weight transposing) recognizes our OOT model.
     """
-    # Use official name as registry key to ensure all multimodal flags (transposing, etc) are active
-    arch = "Qwen2_5_VLForConditionalGeneration"
+    custom_arch = "MyCustomOOTMultimodalModel"
 
-    # --- PHASE 1: STATIC VERIFICATION ---
-    # We register the ORIGINAL JAX implementation.
-    # Since we cleared registries, if it runs, it MUST be coming from this registration.
-    register_model(arch, Qwen2_5_VLForConditionalGeneration)
-    assert arch in _MODEL_REGISTRY
+    # --- PHASE 1: FULL IDENTITY REGISTRATION ---
 
-    model_config = MockModelConfig(architectures=[arch])
+    # A. Register the architecture implementation to tpu-inference and vLLM
+    register_model(custom_arch, OOTMultimodalModel)
+
+    # B. Register the NEW CLASS to vLLM's Multimodal Registry.
+    # Without this, vLLM's ModelConfig won't know the new class can handle images.
+    MULTIMODAL_REGISTRY.register_processor(
+        Qwen2_5_VLMultiModalProcessor,
+        info=Qwen2_5_VLProcessingInfo,
+        dummy_inputs=Qwen2_5_VLDummyInputsBuilder,
+    )(OOTMultimodalModel)
+
+    assert custom_arch in _MODEL_REGISTRY
+
+    # Static Verification
+    model_config = MockModelConfig(architectures=[custom_arch])
     vllm_compatible_model, _ = ModelRegistry.resolve_model_cls(
-        architectures=[arch], model_config=model_config)
+        architectures=[custom_arch], model_config=model_config)
 
     assert vllm_compatible_model is not None
     assert issubclass(vllm_compatible_model, torch.nn.Module)
+    assert issubclass(vllm_compatible_model, OOTMultimodalModel)
 
     if VLLM_INTERFACE_CHECK_AVAILABLE:
         assert is_vllm_model(vllm_compatible_model)
 
-    # --- PHASE 2: DYNAMIC VERIFICATION ---
+    # --- PHASE 2: DYNAMIC INFERENCE ---
 
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
-    tensor_parallel_size = _get_tensor_parallel_size()
-    max_model_len = 4096
-    gpu_memory_utilization = 0.5
-
-    # Aligning exactly with the original multimodal test's EngineArgs
     engine_args = EngineArgs(
         model=model_id,
-        max_model_len=max_model_len,
-        tensor_parallel_size=tensor_parallel_size,
-        gpu_memory_utilization=gpu_memory_utilization,
+        # Force vLLM to resolve to our new custom architecture name
+        hf_overrides={"architectures": [custom_arch]},
+        max_model_len=4096,
+        tensor_parallel_size=_get_tensor_parallel_size(),
+        gpu_memory_utilization=0.5,
         max_num_seqs=1,
         mm_processor_kwargs={
             "size": {
@@ -121,28 +145,23 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
         limit_mm_per_prompt={"image": 1},
     )
 
-    # Convert to dict and perform the same cleanup/modification as original test
     engine_kwargs = asdict(engine_args)
     if engine_kwargs.get("additional_config") is None:
         engine_kwargs["additional_config"] = {}
-
-    # TPU stability: empty cudagraph_capture_sizes
     engine_kwargs["compilation_config"]["cudagraph_capture_sizes"] = []
 
-    # Clean up None values for Pydantic validation
     pass_config = engine_kwargs["compilation_config"].get("pass_config") or {}
     pass_config = {k: v for k, v in pass_config.items() if v is not None}
     engine_kwargs["compilation_config"]["pass_config"] = pass_config
 
-    # Initialize Engine
+    # Initialize Engine. vLLM will now correctly identify the model as multimodal.
     llm = LLM(**engine_kwargs)
 
-    # Runtime Check: Verify the model instance is the expected JAX implementation.
+    # Runtime Identity Check
     model_instance = llm.llm_engine.model_executor.driver_worker.model_runner.model
-    # This check is now extremely stable as it uses the original class
-    assert isinstance(model_instance, Qwen2_5_VLForConditionalGeneration)
+    assert isinstance(model_instance, OOTMultimodalModel)
 
-    # Using Qwen2.5-VL prompt template
+    # Inference Quality Check
     image = convert_image_mode(ImageAsset("cherry_blossom").pil_image, "RGB")
     prompt = ("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
               "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>"
@@ -150,11 +169,10 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
               "<|im_start|>assistant\n")
 
     inputs = {"prompt": prompt, "multi_modal_data": {"image": image}}
-    sampling_params = SamplingParams(temperature=0, max_tokens=64)
-
-    outputs = llm.generate(inputs, sampling_params)
+    outputs = llm.generate(inputs, SamplingParams(temperature=0,
+                                                  max_tokens=64))
     generated_text = outputs[0].outputs[0].text.strip()
-    print(f"\nOOT Model Response: {generated_text}")
+    print(f"\nOOT Fully Verified Response: {generated_text}")
 
     # Accuracy similarity check
     similarity_score = max(
@@ -162,6 +180,6 @@ def test_oot_multimodal_full_stack_verification(cleanup_registries):
                                 autojunk=False).ratio()
         for expected in EXPECTED_TEXTS)
     print(f"Similarity Score: {similarity_score:.4f}")
-    assert similarity_score >= 0.85, f"Response quality failed! Output: {generated_text}"
+    assert similarity_score >= 0.85
 
     llm.llm_engine.engine_core.shutdown()

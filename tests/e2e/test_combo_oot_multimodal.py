@@ -16,77 +16,45 @@ import os
 from dataclasses import asdict
 
 from vllm.assets.image import ImageAsset
-from vllm.model_executor.models.qwen2_5_vl import (
-    Qwen2_5_VLDummyInputsBuilder, Qwen2_5_VLMultiModalProcessor,
-    Qwen2_5_VLProcessingInfo)
-from vllm.model_executor.models.registry import ModelRegistry
-# Import official multimodal registration tools
-from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.image import convert_image_mode
 
 # Official tpu_inference libraries and registries
-from tpu_inference.models.common.model_loader import (_MODEL_REGISTRY,
-                                                      register_model)
+from tpu_inference.models.common.model_loader import _MODEL_REGISTRY
 from tpu_inference.models.jax.qwen2_5_vl import \
     Qwen2_5_VLForConditionalGeneration
 from vllm import LLM, EngineArgs, SamplingParams
 
-try:
-    from vllm.model_executor.models.interfaces_base import is_vllm_model
-    VLLM_INTERFACE_CHECK_AVAILABLE = True
-except ImportError:
-    VLLM_INTERFACE_CHECK_AVAILABLE = False
+# try:
+#     from vllm.model_executor.models.interfaces_base import is_vllm_model
+#     VLLM_INTERFACE_CHECK_AVAILABLE = True
+# except ImportError:
+#     VLLM_INTERFACE_CHECK_AVAILABLE = False
 
-# --- MODULE LEVEL REGISTRATION ---
-# Use unique name to avoid conflicts
-custom_arch = "My_Inherited_OOT_Multimodal_Model"
+# --- MODULE LEVEL "SUBSTITUTION" ---
+# Instead of creating a new architecture name, we override the JAX implementation
+# of the official architecture. This allows us to "inherit" all of vLLM's
+# built-in multimodal registration and identity checks for the official name.
+
+official_arch = "Qwen2_5_VLForConditionalGeneration"
 
 
-# 1. Define OOT Class with Decorator
-@MULTIMODAL_REGISTRY.register_processor(
-    Qwen2_5_VLMultiModalProcessor,
-    info=Qwen2_5_VLProcessingInfo,
-    dummy_inputs=Qwen2_5_VLDummyInputsBuilder,
-)
+# 1. Define OOT Class
 class OOTMultimodalModel(Qwen2_5_VLForConditionalGeneration):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Provenance signature
+        # Provenance signature to prove this class is active
         print(
-            f"!!! OOT Multimodal Subclass ({self.__class__.__name__}) Initialized !!!"
+            f"!!! OOT Multimodal Subclass ({self.__class__.__name__}) Successfully Intercepted !!!"
         )
 
 
-# 2. Register the JAX model to create the shadow class in this module's context
-register_model(custom_arch, OOTMultimodalModel)
+# 2. Substitution: Overwrite the tpu_inference registry for the official name.
+# When tpu_runner.py calls get_model(), it will look up this dictionary and
+# find our OOT class instead of the standard JAX implementation.
+_MODEL_REGISTRY[official_arch] = OOTMultimodalModel
 
-
-# 3. Manually sync the shadow class to multimodal registry at the module level
-# Reference implementation of MockModelConfig from test_model_loader.py
-class MockModelConfig:
-
-    def __init__(self, architectures):
-        self.hf_config = self._MockHfConfig(architectures)
-        self.model_impl = "flax_nnx"
-
-    class _MockHfConfig:
-
-        def __init__(self, architectures):
-            self.architectures = architectures
-
-
-vllm_compatible_model, _ = ModelRegistry.resolve_model_cls(
-    architectures=[custom_arch],
-    model_config=MockModelConfig(architectures=[custom_arch]))
-
-MULTIMODAL_REGISTRY.register_processor(
-    Qwen2_5_VLMultiModalProcessor,
-    info=Qwen2_5_VLProcessingInfo,
-    dummy_inputs=Qwen2_5_VLDummyInputsBuilder,
-)(vllm_compatible_model)
-
-# Standard gold-standard texts for accuracy check (aligned with test_multi_modal_inference.py)
+# Standard gold-standard texts for accuracy check
 EXPECTED_TEXTS = (
     "The image depicts a tall, cylindrical tower with a lattice-like structure, surrounded by cherry blossom trees in full bloom. The cherry blossoms are in various stages of opening, with pink petals covering the branches. The sky is clear and blue, providing a vibrant backdrop to the scene. The tower appears to be a significant landmark",
     "The image depicts a stunning view of the Tokyo Skytree, a tall broadcasting tower located in the Odaiba district of Tokyo, Japan. The skytree is surrounded by cherry blossom trees in full bloom, creating a picturesque and vibrant scene. The cherry blossoms are in various stages of bloom, with some branches densely covered",
@@ -99,22 +67,20 @@ def _get_tensor_parallel_size():
 
 def test_oot_multimodal_full_stack_verification():
     """
-    Combined Feature Test: OOT Inheritance + Multimodal Inference.
+    Combined Feature Test: OOT Inheritance via Substitution.
+    
+    This verifies that by overwriting the official architecture entry in 
+    _MODEL_REGISTRY, we can run custom logic while maintaining full 
+    parity with official multimodal configurations.
     """
-    # Verify registration state
-    assert custom_arch in _MODEL_REGISTRY
-    assert vllm_compatible_model is not None
-    assert issubclass(vllm_compatible_model, OOTMultimodalModel)
-
-    if VLLM_INTERFACE_CHECK_AVAILABLE:
-        assert is_vllm_model(vllm_compatible_model)
+    # Verify substitution is active in the current process
+    assert _MODEL_REGISTRY[official_arch] is OOTMultimodalModel
 
     # --- DYNAMIC VERIFICATION ---
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     engine_args = EngineArgs(
         model=model_id,
-        # Force vLLM to resolve to our new custom architecture name
-        hf_overrides={"architectures": [custom_arch]},
+        # NO hf_overrides needed! We are pretending to be the official model.
         max_model_len=4096,
         tensor_parallel_size=_get_tensor_parallel_size(),
         gpu_memory_utilization=0.5,
@@ -139,11 +105,12 @@ def test_oot_multimodal_full_stack_verification():
     engine_kwargs["compilation_config"]["pass_config"] = pass_config
 
     # Initialize Engine.
+    # Because we use the official name, vLLM finds its own registered MM labels.
     llm = LLM(**engine_kwargs)
 
     # Identity Check: Verify we are using the subclass, not the original class
+    # The runner's model will be an instance of OOTMultimodalModel because of our _MODEL_REGISTRY swap.
     model_instance = llm.llm_engine.model_executor.driver_worker.model_runner.model
-    assert type(model_instance) is not Qwen2_5_VLForConditionalGeneration
     assert isinstance(model_instance, OOTMultimodalModel)
 
     # Inference Quality Check

@@ -1151,6 +1151,9 @@ class Qwen2_5_VLForConditionalGeneration(nnx.Module):
         return self.model.embed_tokens.decode(hidden_states)
 
     def load_weights(self, rng_key: jax.Array) -> None:
+        logger.info(
+            f"Qwen2_5_VL load_weights started. is_multimodal_model={self.vllm_config.model_config.is_multimodal_model}"
+        )
         self.rng = nnx.Rngs(rng_key)
         # Key: path to a HF layer weight
         # Value: a tuple of (path to a nnx layer weight, nnx weight sharding)

@@ -399,6 +399,13 @@ def _load_and_shard_weight(vllm_config,
     model_weight, model_sharding = get_param_and_sharding(
         params, shardings, model_key)
 
+    # Monitor visual weight dimensions specifically
+    if "visual" in hf_key or "visual" in model_key:
+        logger.info(
+            "DEBUG VISION WEIGHT | before transform | "
+            f"{hf_key}: {hf_weight.shape} --> {model_key}: {model_weight.get_value().shape}"
+        )
+
     logger.debug(
         "before transform | "
         f"{hf_key}: {hf_weight.shape} --> {model_key}: {model_weight.get_value().shape} {model_sharding}"
@@ -451,8 +458,19 @@ def _load_and_shard_weight(vllm_config,
     )
 
     if head_dim_pad == 0:
-        assert model_weight.get_value(
-        ).shape == hf_weight.shape, f"{hf_key}: {model_weight.get_value().shape} != {hf_weight.shape}"
+        if model_weight.get_value().shape != hf_weight.shape:
+            logger.error(
+                f"SHAPE MISMATCH DETECTED | hf_key: {hf_key} | model_key: {model_key}"
+            )
+            logger.error(f" - hf_weight shape: {hf_weight.shape}")
+            logger.error(
+                f" - model_weight expected shape: {model_weight.get_value().shape}"
+            )
+            logger.error(
+                f" - transpose_keys matching: {[k for k in transpose_keys if k in hf_key]}"
+            )
+            assert model_weight.get_value().shape == hf_weight.shape, \
+                f"{hf_key}: {model_weight.get_value().shape} != {hf_weight.shape}"
 
     # Update the model weight
     spec = model_sharding.spec if isinstance(model_sharding,

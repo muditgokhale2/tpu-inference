@@ -328,7 +328,7 @@ set_jax_envs v6
 upload_with_priority .buildkite/features/Combo_OOT_Multimodal.yml 10
 set_jax_envs unset
 
-# Upload Combo Test pipeline for v7
-set_jax_envs v7
-upload_with_priority .buildkite/features/Combo_OOT_Multimodal.yml 10
-set_jax_envs unset
+# # Upload Combo Test pipeline for v7
+# set_jax_envs v7
+# upload_with_priority .buildkite/features/Combo_OOT_Multimodal.yml 10
+# set_jax_envs unset

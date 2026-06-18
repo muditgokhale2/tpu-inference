@@ -59,13 +59,27 @@ class OOTMultimodalModel(Qwen2_5_VLForConditionalGeneration):
 
 
 # 2. Register the JAX model to create the shadow class in this module's context
-# This must happen at the module level so EngineCore process executes it upon import.
 register_model(custom_arch, OOTMultimodalModel)
 
+
 # 3. Manually sync the shadow class to multimodal registry at the module level
-# This ensures that even in a separate process, the shadow class is recognized as MM.
+# Reference implementation of MockModelConfig from test_model_loader.py
+class MockModelConfig:
+
+    def __init__(self, architectures):
+        self.hf_config = self._MockHfConfig(architectures)
+        self.model_impl = "flax_nnx"
+
+    class _MockHfConfig:
+
+        def __init__(self, architectures):
+            self.architectures = architectures
+
+
 vllm_compatible_model, _ = ModelRegistry.resolve_model_cls(
-    architectures=[custom_arch])
+    architectures=[custom_arch],
+    model_config=MockModelConfig(architectures=[custom_arch]))
+
 MULTIMODAL_REGISTRY.register_processor(
     Qwen2_5_VLMultiModalProcessor,
     info=Qwen2_5_VLProcessingInfo,

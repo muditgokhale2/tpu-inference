@@ -895,6 +895,7 @@ class TPUModelRunner(KVConnectorModelRunnerMixin, LoRAModelRunnerMixin):
         # --limit-mm-per-prompt '{"image": 0, "video": 0}'
         disable_mm_from_limits = False
         if self.model_config.is_multimodal_model:
+            logger.info("vLLM ModelConfig reports is_multimodal_model=True")
             mm_limits = self.model_config.multimodal_config.limit_per_prompt
             # According to https://github.com/vllm-project/vllm/blob/21d2b53f88d99f9ab369444f6d53ed2b9c260e4f/vllm/config/multimodal.py#L79-L95
             # if a modality limit is missing, we should treat count as 999. So here we disable multi-modality only when all limits are set to 0.
@@ -907,11 +908,21 @@ class TPUModelRunner(KVConnectorModelRunnerMixin, LoRAModelRunnerMixin):
                     f"Disabling multi-modality for model because limits are set to 0. {mm_limits=}"
                 )
 
+        else:
+            logger.info("vLLM ModelConfig reports is_multimodal_model=False")
+
         self.is_multimodal_model = (self.model_config.is_multimodal_model
                                     and self.embed_multimodal_fn is not None
                                     and hasattr(self.model_config.hf_config,
                                                 "architectures")
                                     and not disable_mm_from_limits)
+
+        logger.info(
+            f"Final TPU Runner Multi-modal Status: {self.is_multimodal_model}")
+        logger.info(
+            f" - embed_multimodal_fn: {'PRESENT' if self.embed_multimodal_fn else 'MISSING'}"
+        )
+        logger.info(f" - disable_mm_from_limits: {disable_mm_from_limits}")
 
         # Clear JIT compilation caches from weight loading to free XLA
         # program reservations (bytes_reserved) on TPU HBM.

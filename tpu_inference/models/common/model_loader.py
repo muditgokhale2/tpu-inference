@@ -789,6 +789,8 @@ def register_model(arch: str, model: Any) -> None:
 
     # Dynamically create the wrapper class that is a subclass of both the
     # JAX model and torch.nn.Module.
+    logger.info(
+        f"Creating VllmCompatible wrapper for JAX class: {model.__name__}")
     VllmCompatibleModel = type(
         f"VllmCompatible{model.__name__}",
         (model, torch.nn.Module),
@@ -802,6 +804,9 @@ def register_model(arch: str, model: Any) -> None:
 
     # Register the wrapped model with vLLM's registry.
     from vllm.model_executor.models.registry import ModelRegistry
+    logger.info(
+        f"Registering shadow class {VllmCompatibleModel.__name__} for architecture {arch}"
+    )
     ModelRegistry.register_model(arch, VllmCompatibleModel)
     logger.info(
         f"Registered JAX model {arch} with tpu_inference and vLLM registries.")

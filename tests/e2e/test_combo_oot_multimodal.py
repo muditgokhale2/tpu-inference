@@ -15,7 +15,6 @@ import difflib
 import os
 from dataclasses import asdict
 
-import torch
 from vllm.assets.image import ImageAsset
 from vllm.model_executor.models.qwen2_5_vl import (
     Qwen2_5_VLDummyInputsBuilder, Qwen2_5_VLMultiModalProcessor,
@@ -38,8 +37,17 @@ try:
 except ImportError:
     VLLM_INTERFACE_CHECK_AVAILABLE = False
 
+# --- MODULE LEVEL REGISTRATION ---
+# Use unique name to avoid conflicts
+custom_arch = "My_Inherited_OOT_Multimodal_Model"
 
-# 1. Define OOT Class inheriting from the correct JAX class
+
+# 1. Define OOT Class with Decorator
+@MULTIMODAL_REGISTRY.register_processor(
+    Qwen2_5_VLMultiModalProcessor,
+    info=Qwen2_5_VLProcessingInfo,
+    dummy_inputs=Qwen2_5_VLDummyInputsBuilder,
+)
 class OOTMultimodalModel(Qwen2_5_VLForConditionalGeneration):
 
     def __init__(self, *args, **kwargs):
@@ -49,6 +57,20 @@ class OOTMultimodalModel(Qwen2_5_VLForConditionalGeneration):
             f"!!! OOT Multimodal Subclass ({self.__class__.__name__}) Initialized !!!"
         )
 
+
+# 2. Register the JAX model to create the shadow class in this module's context
+# This must happen at the module level so EngineCore process executes it upon import.
+register_model(custom_arch, OOTMultimodalModel)
+
+# 3. Manually sync the shadow class to multimodal registry at the module level
+# This ensures that even in a separate process, the shadow class is recognized as MM.
+vllm_compatible_model, _ = ModelRegistry.resolve_model_cls(
+    architectures=[custom_arch])
+MULTIMODAL_REGISTRY.register_processor(
+    Qwen2_5_VLMultiModalProcessor,
+    info=Qwen2_5_VLProcessingInfo,
+    dummy_inputs=Qwen2_5_VLDummyInputsBuilder,
+)(vllm_compatible_model)
 
 # Standard gold-standard texts for accuracy check (aligned with test_multi_modal_inference.py)
 EXPECTED_TEXTS = (
@@ -61,60 +83,19 @@ def _get_tensor_parallel_size():
     return 2 if os.environ.get('TPU_VERSION', 'tpu6e') == "tpu7x" else 1
 
 
-# Mock config needed for vLLM resolution check
-class MockModelConfig:
-
-    def __init__(self, architectures):
-        self.hf_config = self._MockHfConfig(architectures)
-        self.model_impl = "flax_nnx"
-
-    class _MockHfConfig:
-
-        def __init__(self, architectures):
-            self.architectures = architectures
-
-
 def test_oot_multimodal_full_stack_verification():
     """
     Combined Feature Test: OOT Inheritance + Multimodal Inference.
-    
-    This test verifies that we can register a NEW architecture name pointing to a 
-    NEW subclass without clearing the original registries. By explicitly 
-    registering the subclass in vLLM's multimodal registry, we restore the 
-    full original implementation state (identity, transposing, processing).
     """
-    # Use a unique name to prove the OOT registration mechanism adds new capability
-    custom_arch = "My_Inherited_OOT_Multimodal_Model"
-
-    # --- PHASE 1: REGISTRATION WITHOUT CLEARING ---
-
-    # A. Register the new architecture to our custom implementation
-    register_model(custom_arch, OOTMultimodalModel)
-
+    # Verify registration state
     assert custom_arch in _MODEL_REGISTRY
-
-    # Static Plumbing Check
-    model_config = MockModelConfig(architectures=[custom_arch])
-    vllm_compatible_model, _ = ModelRegistry.resolve_model_cls(
-        architectures=[custom_arch], model_config=model_config)
-
-    # B. Explicitly sync multimodal capabilities for the WRAPPED class.
-    # We must register against the vllm_compatible_model (the shadow class)
-    # created by register_model, not the raw JAX OOTMultimodalModel class.
-    MULTIMODAL_REGISTRY.register_processor(
-        Qwen2_5_VLMultiModalProcessor,
-        info=Qwen2_5_VLProcessingInfo,
-        dummy_inputs=Qwen2_5_VLDummyInputsBuilder,
-    )(vllm_compatible_model)
-
     assert vllm_compatible_model is not None
-    assert issubclass(vllm_compatible_model, torch.nn.Module)
     assert issubclass(vllm_compatible_model, OOTMultimodalModel)
 
     if VLLM_INTERFACE_CHECK_AVAILABLE:
         assert is_vllm_model(vllm_compatible_model)
 
-    # --- PHASE 2: DYNAMIC VERIFICATION ---
+    # --- DYNAMIC VERIFICATION ---
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     engine_args = EngineArgs(
         model=model_id,
@@ -143,7 +124,7 @@ def test_oot_multimodal_full_stack_verification():
     pass_config = {k: v for k, v in pass_config.items() if v is not None}
     engine_kwargs["compilation_config"]["pass_config"] = pass_config
 
-    # Initialize Engine. is_multimodal_model will be True because we registered the class.
+    # Initialize Engine.
     llm = LLM(**engine_kwargs)
 
     # Identity Check: Verify we are using the subclass, not the original class

@@ -804,6 +804,17 @@ def register_model(arch: str, model: Any) -> None:
 
     # Register the wrapped model with vLLM's registry.
     from vllm.model_executor.models.registry import ModelRegistry
+    from vllm.multimodal import MULTIMODAL_REGISTRY
+
+    # Purely observational debug logs
+    is_jax_mm = model in MULTIMODAL_REGISTRY
+    is_shadow_mm = VllmCompatibleModel in MULTIMODAL_REGISTRY
+    logger.info(f"PROCEDURE CHECK | Arch: {arch}")
+    logger.info(f" - Base JAX model ({model.__name__}) MM status: {is_jax_mm}")
+    logger.info(
+        f" - Shadow class ({VllmCompatibleModel.__name__}) MM status: {is_shadow_mm}"
+    )
+
     logger.info(
         f"Registering shadow class {VllmCompatibleModel.__name__} for architecture {arch}"
     )

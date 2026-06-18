@@ -15,7 +15,6 @@
 steps:
   - label: "${TPU_VERSION:-tpu6e} Correctness: Out-Of-Tree + Multimodal"
     key: "${TPU_VERSION:-tpu6e}_Combo_OOT_Multimodal_Correctness"
-    soft_fail: true
     agents:
       queue: "${TPU_QUEUE_SINGLE:-tpu_v6e_queue}"
     env:
@@ -24,6 +23,15 @@ steps:
       - |
         .buildkite/scripts/run_in_docker.sh \
           python3 -m pytest -s -v /workspace/tpu_inference/tests/e2e/test_combo_oot_multimodal.py::test_oot_multimodal_full_stack_verification
+
+  - label: "${TPU_VERSION:-tpu6e} Correctness tests for Multimodal Inputs"
+    key: "${TPU_VERSION:-tpu6e}_Multimodal_Inputs_CorrectnessTest"
+    env:
+      TPU_VERSION: "${TPU_VERSION:-tpu6e}"
+    agents:
+      queue: "${TPU_QUEUE_SINGLE:-tpu_v6e_queue}"
+    commands:
+      - .buildkite/scripts/run_in_docker.sh python3 -m pytest -s -v /workspace/tpu_inference/tests/e2e/test_multi_modal_inference.py
 
   # - label: "${TPU_VERSION:-tpu6e} Performance: Out-Of-Tree + Multimodal"
   #   key: "${TPU_VERSION:-tpu6e}_Combo_OOT_Multimodal_Performance"

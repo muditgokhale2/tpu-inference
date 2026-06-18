@@ -91,21 +91,21 @@ def test_oot_multimodal_full_stack_verification():
     # A. Register the new architecture to our custom implementation
     register_model(custom_arch, OOTMultimodalModel)
 
-    # B. Explicitly sync multimodal capabilities for the NEW subclass.
-    # This restores the "original state" for the inherited class, allowing vLLM
-    # to recognize it as multimodal and trigger correct weight transpositions.
-    MULTIMODAL_REGISTRY.register_processor(
-        Qwen2_5_VLMultiModalProcessor,
-        info=Qwen2_5_VLProcessingInfo,
-        dummy_inputs=Qwen2_5_VLDummyInputsBuilder,
-    )(OOTMultimodalModel)
-
     assert custom_arch in _MODEL_REGISTRY
 
     # Static Plumbing Check
     model_config = MockModelConfig(architectures=[custom_arch])
     vllm_compatible_model, _ = ModelRegistry.resolve_model_cls(
         architectures=[custom_arch], model_config=model_config)
+
+    # B. Explicitly sync multimodal capabilities for the WRAPPED class.
+    # We must register against the vllm_compatible_model (the shadow class)
+    # created by register_model, not the raw JAX OOTMultimodalModel class.
+    MULTIMODAL_REGISTRY.register_processor(
+        Qwen2_5_VLMultiModalProcessor,
+        info=Qwen2_5_VLProcessingInfo,
+        dummy_inputs=Qwen2_5_VLDummyInputsBuilder,
+    )(vllm_compatible_model)
 
     assert vllm_compatible_model is not None
     assert issubclass(vllm_compatible_model, torch.nn.Module)
@@ -115,7 +115,6 @@ def test_oot_multimodal_full_stack_verification():
         assert is_vllm_model(vllm_compatible_model)
 
     # --- PHASE 2: DYNAMIC VERIFICATION ---
-
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     engine_args = EngineArgs(
         model=model_id,

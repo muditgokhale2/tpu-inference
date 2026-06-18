@@ -807,8 +807,8 @@ def register_model(arch: str, model: Any) -> None:
     from vllm.multimodal import MULTIMODAL_REGISTRY
 
     # Purely observational debug logs
-    is_jax_mm = model in MULTIMODAL_REGISTRY
-    is_shadow_mm = VllmCompatibleModel in MULTIMODAL_REGISTRY
+    is_jax_mm = model in MULTIMODAL_REGISTRY._full_processors
+    is_shadow_mm = VllmCompatibleModel in MULTIMODAL_REGISTRY._full_processors
     logger.info(f"PROCEDURE CHECK | Arch: {arch}")
     logger.info(f" - Base JAX model ({model.__name__}) MM status: {is_jax_mm}")
     logger.info(

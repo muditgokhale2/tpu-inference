@@ -16,4 +16,7 @@
 # Exit on error, exit on unset variable, fail on pipe errors.
 set -euo pipefail
 
-sleep 60
+for i in {1..90}; do
+  echo "Waiting for 15 minutes... $((i * 10))s / 900s"
+  sleep 10
+done
